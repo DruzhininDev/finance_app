@@ -126,10 +126,31 @@ def show_records(records):
         description = record[2]
         date = record[3]
         type = record[4]
+        balance = record[5]
 
-        html += f"{amount} | {type} | {description} | {date}<br>"
+        if type == "income":
+            color = "#d4edda"
+            text_color = "#155724"
+        else: 
+            color = "#f8d7da"
+            text_color = "#721c24"
 
-        return html
+        style = (
+            f"background: {color}; color: {text_color}; margin-bottom: 10px;"
+            f"font-size: 20px;"
+        )
+        edit_link = f"<a href='/edit/{record[0]}'>Редактировать</a>"
+
+        link = f"<a href='/delete/{record[0]}'>Удалить</a>"
+        text = f"{amount} | {type} | {description} | {date} | {balance} "
+        html += f"<div style = '{style}'>{text} {edit_link} {link} </div>"
+
+        
+
+   return html
+
+
+
 
 def get_balance():
 
@@ -157,7 +178,55 @@ def get_balance():
             balance -= amount
     return balance
 
-    
+@app.route("/edit/<int:record_id>", methods=["GET", "POST"])
+def edit_record(record_id):
+
+    if request.method =="GET":
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM transactions WHERE id = ?", (record_id,))
+        record = cursor.fetchone()
+        conn.close()
+
+        if not record:
+            return "Запись не найдена"
+
+        amount = record[1]
+        description = record[2]
+        date = record[3]
+        type = record[4]
+
+        return f"""
+            <h2>Редактировать запись</h2>
+            <form method="POST">
+                <input type="number" step="0.01" name="amount" value="{amount}" required><br>
+                <input type="text" name="description" value="{description}"><br>
+                <input type="date" name="date" value="{date}"><br>
+                <select name="type">
+                    <option value="income" {'selected' if type == 'income' else ''}>Доход</option>
+                    <option value="expense" {'selected' if type =='expense' else ''}>Расход</option>
+                </select><br>
+                <button type="submit">Сохранить</button>
+            </form>
+            """
+
+    if request.method =="POST":
+        amount = float(request.form["amount"])
+        description = request.form.get("description", "")
+        date = request.form["date"]
+        type = request.form["type"]
+
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE transactions
+            SET amount = ?, description = ?, date = ?, type = ?
+            WHERE id = ? 
+            """, (amount, description, date, type, record_id))
+        conn.commit()
+        conn.close()
+
+        return "Запись обновлена! <a href='/history'>Вернуться в историю</a>"
 @app.route("/", methods=["GET", "POST"])
 def home():
 
@@ -191,6 +260,17 @@ def home():
         <a href="/transactions">Добавить запись</a><br>
         <a href="/history">История</a>
         """
+
+@app.route("/delete/<int:record_id>")
+def delete_record(record_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM transactions WHERE id = ?", (record_id,))
+    conn.commit()
+    conn.close()
+
+    return "Запись удалена! <a href='/history'>Вернуться к истории</a>"
+
 
 @app.route("/add_income", methods=["GET", "POST"])
 def add_income_page():
@@ -250,6 +330,7 @@ def history_page():
     return f"""
     <h2>История</h2>
     {html_transactions}
+
     <a href="/">На главную</a>
     """
 @app.route("/transactions", methods=["GET", "POST"])
