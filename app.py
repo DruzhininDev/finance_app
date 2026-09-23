@@ -122,11 +122,11 @@ MENU_HTML = """
 def show_records(records):
    html=""
    for record in records:
-        amount = record[1]
+        amount = f"{record[1]:.2f}"
         description = record[2]
         date = record[3]
         type = record[4]
-        balance = record[5]
+        balance = f"{record[5]:.2f}"
 
         if type == "income":
             color = "#d4edda"
@@ -178,6 +178,37 @@ def get_balance():
             balance -= amount
     return balance
 
+
+def recalculate_balances():
+    conn = get_db()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT value FROM settings WHERE setting_key = 'initial_balance'")
+    start_sum = cursor.fetchall()
+    balance = float(start_sum[0][0])
+
+    cursor.execute("SELECT id, amount, type FROM transactions ORDER BY id")
+    transactions = cursor.fetchall()
+
+    for trans in transactions:
+        trans_id = trans[0]
+        amount = trans[1]
+        trans_type = trans[2]
+
+        if trans_type == "income":
+            balance += amount
+        else:
+            balance -= amount
+
+        cursor.execute("""
+            UPDATE transactions
+            SET balance_after = ?
+            WHERE id = ?
+        """, (balance, trans_id))
+
+    conn.commit()
+    conn.close()
+
 @app.route("/edit/<int:record_id>", methods=["GET", "POST"])
 def edit_record(record_id):
 
@@ -226,6 +257,8 @@ def edit_record(record_id):
         conn.commit()
         conn.close()
 
+        recalculate_balances()
+
         return "Запись обновлена! <a href='/history'>Вернуться в историю</a>"
 @app.route("/", methods=["GET", "POST"])
 def home():
@@ -268,6 +301,8 @@ def delete_record(record_id):
     cursor.execute("DELETE FROM transactions WHERE id = ?", (record_id,))
     conn.commit()
     conn.close()
+
+    recalculate_balances()
 
     return "Запись удалена! <a href='/history'>Вернуться к истории</a>"
 
@@ -344,21 +379,16 @@ def transactions():
         date = request.form["date"]
         trans_type = request.form["type"]
 
-        current_balance = get_balance()
-
-        if trans_type == "income":
-            new_balance = current_balance + amount
-        else:
-            new_balance = current_balance - amount
-
         conn = get_db()
         cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO transactions (amount, description, date, type, balance_after)
             VALUES (?, ?, ?, ?, ?)
-        """, (amount, description, date, trans_type, new_balance))
+        """, (amount, description, date, trans_type, 0))
         conn.commit()
         conn.close()
+
+        recalculate_balances()
 
         return "Сохранено! <a href='/'>На главную</a>"
 
