@@ -1,27 +1,7 @@
-from flask import Flask, request, render_template_string
+import sqlite3
+from flask import Flask, request, render_template_string, redirect
 from database import init_db, get_db
-
-EXPENSE_CATEGORIES = {
-    "food": "Еда",
-    "transport": "Транспорт",
-    "health": "Здоровье",
-    "entertainment": "Развлечения",
-    "services": "Услуги",
-    "other": "Другое",
-}
-
-INCOME_CATEGORIES = {
-    "salary": "Зарплата",
-    "debt": "Возврат долга",
-    "dividends": "Дивиденды",
-    "interest": "Проценты по счетам",
-    "gift": "Подарок",
-    "freelance": "Фриланс",
-    "other_income": "Другое",
-}
-
-
-
+from werkzeug.security import generate_password_hash
 
 
 app = Flask(__name__)
@@ -30,30 +10,19 @@ app = Flask(__name__)
 init_db()
 
 # HTML-форма для добавления расхода
-FORM_HTML = """
-<h2>Добавить расход</h2>
-<form method="POST">
-    <label>Сумма:</label><br>
-    <input type="number" step="0.01" name="amount" required><br><br>
-    
-    <label>Категория:</label><br>
-    <select name="category">
-        <option value="food">Еда</option>
-        <option value="transport">Транспорт</option>
-        <option value="health">Здоровье</option>
-        <option value="entertainment">Развлечения</option>
-        <option value="services">Услуги</option>
-        <option value="other">Другое</option>
-    </select><br><br>
-    
-    <label>Описание (необязательно):</label><br>
-    <input type="text" name="description"><br><br>
-    
-    <label>Дата:</label><br>
-    <input type="date" name="date" required><br><br>
-    
-    <button type="submit">Сохранить</button>
+
+REGISTER_FORM_HTML = """
+<h2>Регистрация</h2>
+<form method="post">
+    <label>Логин:</label><br>
+    <input type="text" name="username" required><br><br>
+
+    <label>Пароль:</label><br>
+    <input type="password" name="password" required><br><br>
+
+    <button type="submit">Зарегистроваться</button>
 </form>
+<p>Уже есть аккаунт?<a href="/login">Войти</a></p>
 """
 
 INITIAL_FORM_HTML = """ 
@@ -86,39 +55,7 @@ TRANSACTIONS_FORM_HTML = """
     <button type="submit">Сохранить</button>
 </form>
 """
-INCOME_FORM_HTML = """
-<h2>Добавить Доход</h2>
-<form method="POST">
-    <label>Сумма</label><br>
-    <input type="number" step="0.01" name="amount" required><br><br>
 
-    <label>Категория</label><br>
-    <select name="category">
-        <option value="salary">Зарплата</option>
-        <option value="debt">Возврат долга</option>
-        <option value="dividends">Дивиденды</option>
-        <option value="interest">Проценты по счетам</option>
-        <option value="gift">Подарок</option>
-        <option value="freelance">Фриланс</option>
-        <option value="other_income">Другое</option>
-    </select><br><br>
-
-    <label>Описание</label><br>
-    <input type="text" name="description"><br><br>
-
-    <label>Дата:</label><br>
-    <input type="date" name="date" required><br><br>
-
-    <button type="submit">Сохранить</button>
-</form>
-"""
-
-MENU_HTML = """
-<h1>Финансовое приложение</h1>
-<p>Баланс: {current_balance} ₽</p>
-<a href="/transactions">Добавить запись</a><br>
-<a href="/history">История</a>
-"""
 def show_records(records):
    html=""
    for record in records:
@@ -209,7 +146,87 @@ def recalculate_balances():
     conn.commit()
     conn.close()
 
-@app.route("/edit/<int:record_id>", methods=["GET", "POST"])
+@app.route("/", methods=["GET", "POST"]) #ГЛАВНАЯ
+def home():
+
+    if request.method =="POST":
+            amount = float(request.form["initial_balance"])
+
+            conn = get_db()
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO settings(setting_key, value)
+                VALUES(?, ?)
+            """, ("initial_balance", amount))
+            conn.commit()
+            conn.close()
+
+            return redirect("/")
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT value FROM settings WHERE setting_key = 'initial_balance'")
+    result = cursor.fetchall()
+    conn.close()
+    
+    # Если суммы нет — показываем форму
+    if not result:
+            return render_template_string(INITIAL_FORM_HTML)
+    else:
+        current_balance = get_balance()
+ 
+    return f"""
+        <h1>Финансовое приложение</h1>
+        <p>Баланс: {current_balance:.2f} ₽</p>
+        <a href="/transactions">Добавить запись</a><br>
+        <a href="/history">История</a>
+        """
+
+@app.route("/transactions", methods=["GET", "POST"]) #ДОБАВЛЕНИЕ ТРАНЗАКЦИЙ
+def transactions():
+    if request.method == "GET":
+        return render_template_string(TRANSACTIONS_FORM_HTML)
+
+    if request.method == "POST":
+        amount = float(request.form["amount"])
+        description = request.form.get("description", "")
+        date = request.form["date"]
+        trans_type = request.form["type"]
+
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO transactions (amount, description, date, type, balance_after)
+            VALUES (?, ?, ?, ?, ?)
+        """, (amount, description, date, trans_type, 0))
+        conn.commit()
+        conn.close()
+
+        recalculate_balances()
+
+        return "Сохранено! <a href='/'>На главную</a>"
+
+@app.route("/history") #ИСТОРИЯ ТРАНЗАКЦИЙ
+def history_page():
+    
+    conn = get_db()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT * FROM transactions")
+    transactions = cursor.fetchall()
+    html_transactions = show_records(transactions)
+
+    conn.close()
+
+    return f"""
+    <h2>История</h2>
+    {html_transactions}
+
+    <a href="/">На главную</a>
+    """
+
+
+@app.route("/edit/<int:record_id>", methods=["GET", "POST"]) #РЕДАКТИРОВАНИЕ ТРАНЗАКЦИЙ
 def edit_record(record_id):
 
     if request.method =="GET":
@@ -260,41 +277,9 @@ def edit_record(record_id):
         recalculate_balances()
 
         return "Запись обновлена! <a href='/history'>Вернуться в историю</a>"
-@app.route("/", methods=["GET", "POST"])
-def home():
 
-    if request.method =="POST":
-            amount = float(request.form["initial_balance"])
 
-            conn = get_db()
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO settings(setting_key, value)
-                VALUES(?, ?)
-            """, ("initial_balance", amount))
-            conn.commit()
-            conn.close()
-
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT value FROM settings WHERE setting_key = 'initial_balance'")
-    result = cursor.fetchall()
-    conn.close()
-    
-    # Если суммы нет — показываем форму
-    if not result:
-            return render_template_string(INITIAL_FORM_HTML)
-    else:
-        current_balance = get_balance()
- 
-    return f"""
-        <h1>Финансовое приложение</h1>
-        <p>Баланс: {current_balance} ₽</p>
-        <a href="/transactions">Добавить запись</a><br>
-        <a href="/history">История</a>
-        """
-
-@app.route("/delete/<int:record_id>")
+@app.route("/delete/<int:record_id>") #УДАЛЕНИЕ ЗАПИСЕЙ
 def delete_record(record_id):
     conn = get_db()
     cursor = conn.cursor()
@@ -307,115 +292,32 @@ def delete_record(record_id):
     return "Запись удалена! <a href='/history'>Вернуться к истории</a>"
 
 
-@app.route("/add_income", methods=["GET", "POST"])
-def add_income_page():
+@app.route("/register", methods=["GET", "POST"]) #РЕГИСТРАЦИЯ
+def register():
     if request.method == "GET":
-        return render_template_string(INCOME_FORM_HTML)
-        
-        # Если пользователь нажал "Сохранить" (POST-запрос)
-    if request.method == "POST":
-        amount = float(request.form["amount"])
-        category = request.form["category"]
-        description = request.form.get("description", "")
-        date = request.form["date"]
-            
-            # Сохраняем в базу данных
-        conn = get_db()
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO incomes (amount, category, description, date)
-            VALUES (?, ?, ?, ?)
-        """, (amount, category, description, date))
-        conn.commit()
-        conn.close()
-            
-        return "Доход сохранён! <a href='/add'>Добавить расход</a> | <a href='/'>На главную</a> | <a href='/add_income'>Добавить ещё</a>"
-    
-@app.route("/initial", methods=["GET", "POST"])
-def initial_page():
-    if request.method == "GET":
-        return render_template_string(INITIAL_FORM_HTML)
-
-    if request.method =="POST":
-        amount = float(request.form["initial_balance"])
-        
-        conn = get_db()
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO settings (ket, value)
-            VALUES (?, ?)
-        """, ("initial_balance", amount))
-        conn.commit()
-        conn.close()
-
-        return "Начальная сумма сохранена! <a href='/'>На главную</a>"
-
-@app.route("/history")
-def history_page():
-    
-    conn = get_db()
-    cursor = conn.cursor()
-
-    cursor.execute("SELECT * FROM transactions")
-    transactions = cursor.fetchall()
-    html_transactions = show_records(transactions)
-
-    conn.close()
-
-    return f"""
-    <h2>История</h2>
-    {html_transactions}
-
-    <a href="/">На главную</a>
-    """
-@app.route("/transactions", methods=["GET", "POST"])
-def transactions():
-    if request.method == "GET":
-        return render_template_string(TRANSACTIONS_FORM_HTML)
+        return render_template_string(REGISTER_FORM_HTML)
 
     if request.method == "POST":
-        amount = float(request.form["amount"])
-        description = request.form.get("description", "")
-        date = request.form["date"]
-        trans_type = request.form["type"]
+        username = request.form["username"]
+        password = request.form["password"]
+
+        password_hash = generate_password_hash(password)
 
         conn = get_db()
         cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO transactions (amount, description, date, type, balance_after)
-            VALUES (?, ?, ?, ?, ?)
-        """, (amount, description, date, trans_type, 0))
-        conn.commit()
+        try:
+            cursor.execute("""
+                INSERT INTO users (username, password_hash)
+                VALUES (?, ?)
+            """, (username, password_hash))
+            conn.commit()
+        except sqlite3.IntegrityError:
+            conn.close()
+            return "Такой логин уже занят. <a href='/register'>Попробовать снова</a>"
+
         conn.close()
+        return "Регистрация успешна! <a href='/login'>Войти</a>"
 
-        recalculate_balances()
-
-        return "Сохранено! <a href='/'>На главную</a>"
-
-@app.route("/add", methods=["GET", "POST"])
-def add_expense():
-    # Если пользователь просто открыл страницу (GET-запрос)
-    if request.method == "GET":
-        return render_template_string(FORM_HTML)
-    
-    # Если пользователь нажал "Сохранить" (POST-запрос)
-    if request.method == "POST":
-        amount = float(request.form["amount"])
-        category = request.form["category"]
-        description = request.form.get("description", "")
-        date = request.form["date"]
-        
-        # Сохраняем в базу данных
-        conn = get_db()
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO expenses (amount, category, description, date)
-            VALUES (?, ?, ?, ?)
-        """, (amount, category, description, date))
-        conn.commit()
-        conn.close()
-        
-        return "Расход сохранён! <a href='/'>На главную</a> | <a href='/add'>Добавить ещё</a>"
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
